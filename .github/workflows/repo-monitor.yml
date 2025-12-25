@@ -1,0 +1,126 @@
+name: Repository Size Monitor
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  # Запуск вручную из интерфейса GitHub
+  workflow_dispatch:
+    inputs:
+      target_folder:
+        description: 'Путь к отслеживаемой папке (относительно корня репозитория)'
+        required: true
+        default: 'src'
+        type: string
+
+# Лимиты (можно менять под свои нужды)
+env:
+  FOLDER_SIZE_LIMIT_MB: 50      # Максимальный размер папки в МБ
+  FILE_COUNT_LIMIT: 100         # Максимальное количество файлов
+  FOLDER_COUNT_LIMIT: 20        # Максимальное количество папок
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set target folder
+      id: set_folder
+      run: |
+        # Используем папку из инпута workflow_dispatch или дефолтную 'src'
+        if [ -n "${{ github.event.inputs.target_folder }}" ]; then
+          echo "TARGET_FOLDER=${{ github.event.inputs.target_folder }}" >> $GITHUB_ENV
+        else
+          echo "TARGET_FOLDER=src" >> $GITHUB_ENV
+        fi
+        echo "Отслеживаемая папка: ${{ env.TARGET_FOLDER }}"
+
+    - name: Check if target folder exists
+      id: check_folder
+      run: |
+        if [ ! -d "${{ env.TARGET_FOLDER }}" ]; then
+          echo "❌ Папка '${{ env.TARGET_FOLDER }}' не существует в репозитории"
+          echo "Доступные папки в корне:"
+          find . -maxdepth 1 -type d | sort
+          exit 1
+        fi
+
+    - name: Calculate folder statistics
+      id: stats
+      run: |
+        echo "=== 📊 СТАТИСТИКА РЕПОЗИТОРИЯ ==="
+        
+        # Размер указанной папки в МБ
+        if [ -d "${{ env.TARGET_FOLDER }}" ]; then
+          FOLDER_SIZE_MB=$(du -sm "${{ env.TARGET_FOLDER }}" | cut -f1)
+          echo "Размер папки '${{ env.TARGET_FOLDER }}': ${FOLDER_SIZE_MB} MB"
+          echo "FOLDER_SIZE_MB=${FOLDER_SIZE_MB}" >> $GITHUB_ENV
+        else
+          echo "FOLDER_SIZE_MB=0" >> $GITHUB_ENV
+        fi
+        
+        # Количество файлов в указанной папке
+        FILE_COUNT=$(find "${{ env.TARGET_FOLDER }}" -type f 2>/dev/null | wc -l || echo "0")
+        echo "Количество файлов в '${{ env.TARGET_FOLDER }}': ${FILE_COUNT}"
+        echo "FILE_COUNT=${FILE_COUNT}" >> $GITHUB_ENV
+        
+        # Количество папок в указанной папке
+        FOLDER_COUNT=$(find "${{ env.TARGET_FOLDER }}" -type d 2>/dev/null | tail -n +2 | wc -l || echo "0")
+        echo "Количество папок в '${{ env.TARGET_FOLDER }}': ${FOLDER_COUNT}"
+        echo "FOLDER_COUNT=${FOLDER_COUNT}" >> $GITHUB_ENV
+        
+        echo "=== ⚠️  УСТАНОВЛЕННЫЕ ЛИМИТЫ ==="
+        echo "Макс. размер папки: ${{ env.FOLDER_SIZE_LIMIT_MB }} MB"
+        echo "Макс. файлов: ${{ env.FILE_COUNT_LIMIT }}"
+        echo "Макс. папок: ${{ env.FOLDER_COUNT_LIMIT }}"
+
+    - name: Validate against limits
+      id: validate
+      run: |
+        echo "=== ✅ ПРОВЕРКА ЛИМИТОВ ==="
+        FAILED=0
+        
+        # Проверка размера папки
+        if [ "${{ env.FOLDER_SIZE_MB }}" -gt "${{ env.FOLDER_SIZE_LIMIT_MB }}" ]; then
+          echo "❌ ПРЕВЫШЕН ЛИМИТ РАЗМЕРА: ${{ env.FOLDER_SIZE_MB }} MB > ${{ env.FOLDER_SIZE_LIMIT_MB }} MB"
+          FAILED=1
+        else
+          echo "✅ Размер папки в пределах: ${{ env.FOLDER_SIZE_MB }} MB ≤ ${{ env.FOLDER_SIZE_LIMIT_MB }} MB"
+        fi
+        
+        # Проверка количества файлов
+        if [ "${{ env.FILE_COUNT }}" -gt "${{ env.FILE_COUNT_LIMIT }}" ]; then
+          echo "❌ ПРЕВЫШЕН ЛИМИТ ФАЙЛОВ: ${{ env.FILE_COUNT }} > ${{ env.FILE_COUNT_LIMIT }}"
+          FAILED=1
+        else
+          echo "✅ Файлов в пределах: ${{ env.FILE_COUNT }} ≤ ${{ env.FILE_COUNT_LIMIT }}"
+        fi
+        
+        # Проверка количества папок
+        if [ "${{ env.FOLDER_COUNT }}" -gt "${{ env.FOLDER_COUNT_LIMIT }}" ]; then
+          echo "❌ ПРЕВЫШЕН ЛИМИТ ПАПОК: ${{ env.FOLDER_COUNT }} > ${{ env.FOLDER_COUNT_LIMIT }}"
+          FAILED=1
+        else
+          echo "✅ Папок в пределах: ${{ env.FOLDER_COUNT }} ≤ ${{ env.FOLDER_COUNT_LIMIT }}"
+        fi
+        
+        # Итог
+        echo ""
+        echo "=== 📈 ИТОГОВАЯ СТАТИСТИКА ==="
+        echo "Папка: ${{ env.TARGET_FOLDER }}"
+        echo "Размер: ${{ env.FOLDER_SIZE_MB }} MB (лимит: ${{ env.FOLDER_SIZE_LIMIT_MB }} MB)"
+        echo "Файлов: ${{ env.FILE_COUNT }} (лимит: ${{ env.FILE_COUNT_LIMIT }})"
+        echo "Папок: ${{ env.FOLDER_COUNT }} (лимит: ${{ env.FOLDER_COUNT_LIMIT }})"
+        
+        if [ "$FAILED" -eq 1 ]; then
+          echo "::error::Обнаружено превышение лимитов! Проверьте логи выше."
+          exit 1
+        else
+          echo "✅ Все проверки пройдены успешно!"
+        fi
